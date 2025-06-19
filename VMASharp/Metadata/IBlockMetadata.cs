@@ -1,10 +1,8 @@
-﻿namespace VMASharp.Metadata
-{
+﻿namespace VMASharp.Metadata {
     /// <summary>
     /// Allocation book-keeping for individual Device Memory Blocks. 
     /// </summary>
-    public interface IBlockMetadata
-    {
+    public interface IBlockMetadata {
         /// <summary>
         /// Must return the total block size
         /// </summary>

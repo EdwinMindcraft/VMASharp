@@ -1,18 +1,13 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Threading;
 using System.Runtime.CompilerServices;
-
 using Silk.NET.Vulkan;
-using VMASharp;
 
-namespace VMASharp
-{
-    public sealed class VulkanMemoryPool : IDisposable
-    {
+namespace VMASharp {
+    public sealed class VulkanMemoryPool : IDisposable {
         public VulkanMemoryAllocator Allocator { get; }
 
-        private Vk VkApi => Allocator.VkApi;
+        private Vk VkApi => this.Allocator.VkApi;
 
 
         public string Name { get; set; }
@@ -21,14 +16,8 @@ namespace VMASharp
 
         internal readonly BlockList BlockList;
 
-        internal VulkanMemoryPool(VulkanMemoryAllocator allocator, in AllocationPoolCreateInfo poolInfo, long preferredBlockSize)
-        {
-            if (allocator is null)
-            {
-                throw new ArgumentNullException(nameof(allocator));
-            }
-
-            this.Allocator = allocator;
+        internal VulkanMemoryPool(VulkanMemoryAllocator allocator, in AllocationPoolCreateInfo poolInfo, long preferredBlockSize) {
+            this.Allocator = allocator ?? throw new ArgumentNullException(nameof(allocator));
 
             ref int tmpRef = ref Unsafe.As<uint, int>(ref allocator.NextPoolID);
 
@@ -52,24 +41,20 @@ namespace VMASharp
             this.BlockList.CreateMinBlocks();
         }
 
-        public void Dispose()
-        {
-            Allocator.DestroyPool(this);
+        public void Dispose() {
+            this.Allocator.DestroyPool(this);
         }
 
-        public int MakeAllocationsLost()
-        {
-            return Allocator.MakePoolAllocationsLost(this);
+        public int MakeAllocationsLost() {
+            return this.Allocator.MakePoolAllocationsLost(this);
         }
 
-        public Result CheckForCorruption()
-        {
-            return Allocator.CheckPoolCorruption(this);
+        public Result CheckForCorruption() {
+            return this.Allocator.CheckPoolCorruption(this);
         }
 
-        public void GetPoolStats(out PoolStats stats)
-        {
-            Allocator.GetPoolStats(this, out stats);
+        public void GetPoolStats(out PoolStats stats) {
+            this.Allocator.GetPoolStats(this, out stats);
         }
     }
 }

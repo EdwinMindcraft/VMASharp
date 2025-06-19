@@ -1,15 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-
-using Silk.NET.Vulkan;
-using VMASharp;
+﻿using Silk.NET.Vulkan;
 using Buffer = Silk.NET.Vulkan.Buffer;
 
-namespace VMASharp.Defragmentation
-{
-    public struct DefragmentationInfo2
-    {
+namespace VMASharp.Defragmentation {
+    public struct DefragmentationInfo2 {
         public DefragmentationFlags Flags;
 
         public Allocation[] Allocations;
@@ -29,8 +22,7 @@ namespace VMASharp.Defragmentation
         public CommandBuffer CommandBuffer;
     }
 
-    public struct DefragmentationPassMoveInfo
-    {
+    public struct DefragmentationPassMoveInfo {
         public Allocation Allocation;
 
         public DeviceMemory Memory;
@@ -38,15 +30,13 @@ namespace VMASharp.Defragmentation
         public ulong Offset;
     }
 
-    public struct DefragmentationInfo
-    {
+    public struct DefragmentationInfo {
         public ulong MaxBytesToMove;
 
         public int MaxAllocationsToMove;
     }
 
-    public class DefragmentationStats
-    {
+    public class DefragmentationStats {
         public long BytesMoved;
 
         public long BytesFreed;
@@ -56,8 +46,7 @@ namespace VMASharp.Defragmentation
         public int DeviceMemoryBlocksFreed;
     }
 
-    internal struct DefragmentationMove
-    {
+    internal struct DefragmentationMove {
         public int SourceBlockIndex, DestinationBlockIndex;
 
         public ulong SourceOffset, DestinationOffset, Size;
@@ -67,10 +56,8 @@ namespace VMASharp.Defragmentation
         public VulkanMemoryBlock SourceBlock, DestinationBlock;
     }
 
-    internal struct BlockDefragmentationContext
-    { 
-        public enum BlockFlags
-        {
+    internal struct BlockDefragmentationContext {
+        public enum BlockFlags {
             Used = 0x01
         }
 

@@ -1,12 +1,8 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Text;
 
-namespace VMASharp
-{
+namespace VMASharp {
     [Flags]
-    public enum AllocatorCreateFlags
-    {
+    public enum AllocatorCreateFlags {
         /// <summary>
         /// Tells the allocator to not use any internal locking, not currently respected
         /// </summary>
@@ -30,8 +26,7 @@ namespace VMASharp
         BufferDeviceAddress = 0x00000020
     }
 
-    public enum MemoryUsage
-    {
+    public enum MemoryUsage {
         /// <summary>
         /// No Intended memory usage specified
         /// </summary>
@@ -110,8 +105,7 @@ namespace VMASharp
     }
 
     [Flags]
-    public enum AllocationCreateFlags
-    {
+    public enum AllocationCreateFlags {
         DedicatedMemory = 0x0001,
         NeverAllocate = 0x0002,
         Mapped = 0x0004,
@@ -123,8 +117,7 @@ namespace VMASharp
     }
 
     [Flags]
-    public enum AllocationStrategyFlags
-    {
+    public enum AllocationStrategyFlags {
         BestFit = 0x1,
         WorstFit = 0x2,
         FirstFit = 0x4,
@@ -134,20 +127,17 @@ namespace VMASharp
     }
 
     [Flags]
-    public enum PoolCreateFlags
-    {
+    public enum PoolCreateFlags {
         IgnoreBufferImageGranularity = 0x0001,
         LinearAlgorithm = 0x0010,
         BuddyAlgorithm = 0x0020
     }
 
-    public enum DefragmentationFlags
-    {
+    public enum DefragmentationFlags {
         Incremental = 0x1
     }
 
-    public enum SuballocationType
-    {
+    public enum SuballocationType {
         Free = 0,
         Unknown,
         Buffer,
@@ -156,16 +146,14 @@ namespace VMASharp
         Image_Optimal
     }
 
-    public enum AllocationRequestType
-    {
+    public enum AllocationRequestType {
         Normal,
         UpperAddress,
         EndOfList1,
         EndOfList2
     }
 
-    internal enum CacheOperation
-    {
+    internal enum CacheOperation {
         Flush,
         Invalidate
     }
