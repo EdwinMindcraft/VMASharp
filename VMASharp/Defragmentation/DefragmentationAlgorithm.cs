@@ -1,39 +1,39 @@
 ﻿using System;
 using Silk.NET.Vulkan;
 
-namespace VMASharp.Defragmentation {
-    internal abstract class DefragmentationAlgorithm : IDisposable {
-        protected readonly VulkanMemoryAllocator Allocator;
-        protected readonly BlockList BlockList;
-        protected readonly uint CurrentFrame;
+namespace VMASharp.Defragmentation;
 
-        protected DefragmentationAlgorithm(VulkanMemoryAllocator allocator, BlockList list, uint currentFrame) {
-            this.Allocator = allocator;
-            this.BlockList = list;
-            this.CurrentFrame = currentFrame;
-        }
+internal abstract class DefragmentationAlgorithm : IDisposable {
+    protected readonly VulkanMemoryAllocator Allocator;
+    protected readonly BlockList BlockList;
+    protected readonly uint CurrentFrame;
 
-        public abstract ulong BytesMoved { get; }
+    protected DefragmentationAlgorithm(VulkanMemoryAllocator allocator, BlockList list, uint currentFrame) {
+        this.Allocator = allocator;
+        this.BlockList = list;
+        this.CurrentFrame = currentFrame;
+    }
 
-        public abstract int AllocationsMoved { get; }
+    public abstract ulong BytesMoved { get; }
 
-        public virtual void Dispose() { }
+    public abstract int AllocationsMoved { get; }
 
-        public abstract void AddAllocation(Allocation alloc, out bool changed);
+    public virtual void Dispose() { }
 
-        public abstract void AddAll();
+    public abstract void AddAllocation(Allocation alloc, out bool changed);
 
-        public abstract Result Defragment(ulong maxBytesToMove, int maxAllocationsToMove, DefragmentationFlags flags, out DefragmentationMove[] moves);
+    public abstract void AddAll();
 
-        protected class AllocateInfo {
-            public Allocation Allocation;
-            public bool Changed;
+    public abstract Result Defragment(ulong maxBytesToMove, int maxAllocationsToMove, DefragmentationFlags flags, out DefragmentationMove[] moves);
 
-            public AllocateInfo() { }
+    protected class AllocateInfo {
+        public Allocation Allocation;
+        public bool Changed;
 
-            public AllocateInfo(Allocation allocation) {
-                this.Allocation = allocation;
-            }
+        public AllocateInfo() { }
+
+        public AllocateInfo(Allocation allocation) {
+            this.Allocation = allocation;
         }
     }
 }

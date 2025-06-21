@@ -5,603 +5,595 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Silk.NET.Vulkan;
 
-namespace VMASharp {
-    using Metadata;
+namespace VMASharp;
 
-    internal class BlockList : IDisposable {
-        private const int AllocationTryCount = 32;
+using Metadata;
 
-        private readonly List<VulkanMemoryBlock> blocks = new();
-        private readonly ReaderWriterLockSlim mutex = new(LockRecursionPolicy.NoRecursion);
+internal class BlockList : IDisposable {
+    private const int AllocationTryCount = 32;
 
-        private readonly int minBlockCount, maxBlockCount;
-        private readonly bool explicitBlockSize;
+    private readonly List<VulkanMemoryBlock> blocks = new();
+    private readonly ReaderWriterLockSlim mutex = new(LockRecursionPolicy.NoRecursion);
 
-        private readonly Func<long, IBlockMetadata> metaObjectCreate;
+    private readonly int minBlockCount, maxBlockCount;
+    private readonly bool explicitBlockSize;
 
-        private bool hasEmptyBlock;
-        private uint nextBlockID;
+    private readonly Func<long, IBlockMetadata> metaObjectCreate;
 
-        public BlockList(VulkanMemoryAllocator allocator, VulkanMemoryPool? pool, int memoryTypeIndex,
+    private bool hasEmptyBlock;
+    private uint nextBlockID;
+
+    public BlockList(
+            VulkanMemoryAllocator allocator, VulkanMemoryPool? pool, int memoryTypeIndex,
             long preferredBlockSize, int minBlockCount, int maxBlockCount, long bufferImageGranularity,
-            int frameInUseCount, bool explicitBlockSize, Func<long, IBlockMetadata> algorithm) {
-            this.Allocator = allocator;
-            this.ParentPool = pool;
-            this.MemoryTypeIndex = memoryTypeIndex;
-            this.PreferredBlockSize = preferredBlockSize;
-            this.minBlockCount = minBlockCount;
-            this.maxBlockCount = maxBlockCount;
-            this.BufferImageGranularity = bufferImageGranularity;
-            this.FrameInUseCount = frameInUseCount;
-            this.explicitBlockSize = explicitBlockSize;
+            int frameInUseCount, bool explicitBlockSize, Func<long, IBlockMetadata> algorithm
+        ) {
+        this.Allocator = allocator;
+        this.ParentPool = pool;
+        this.MemoryTypeIndex = memoryTypeIndex;
+        this.PreferredBlockSize = preferredBlockSize;
+        this.minBlockCount = minBlockCount;
+        this.maxBlockCount = maxBlockCount;
+        this.BufferImageGranularity = bufferImageGranularity;
+        this.FrameInUseCount = frameInUseCount;
+        this.explicitBlockSize = explicitBlockSize;
 
-            this.metaObjectCreate = algorithm;
-        }
+        this.metaObjectCreate = algorithm;
+    }
 
-        public void Dispose() {
-            foreach (VulkanMemoryBlock block in this.blocks) block.Dispose();
-        }
+    public void Dispose() {
+        foreach (VulkanMemoryBlock block in this.blocks) block.Dispose();
+    }
 
-        public VulkanMemoryAllocator Allocator { get; }
+    public VulkanMemoryAllocator Allocator { get; }
 
-        public VulkanMemoryPool? ParentPool { get; }
+    public VulkanMemoryPool? ParentPool { get; }
 
-        public bool IsCustomPool => this.ParentPool != null;
+    public bool IsCustomPool => this.ParentPool != null;
 
-        public int MemoryTypeIndex { get; }
+    public int MemoryTypeIndex { get; }
 
-        public long PreferredBlockSize { get; }
+    public long PreferredBlockSize { get; }
 
-        public long BufferImageGranularity { get; }
+    public long BufferImageGranularity { get; }
 
-        public int FrameInUseCount { get; }
+    public int FrameInUseCount { get; }
 
-        public bool IsEmpty {
-            get {
-                this.mutex.EnterReadLock();
-
-                try {
-                    return this.blocks.Count == 0;
-                }
-                finally {
-                    this.mutex.ExitReadLock();
-                }
-            }
-        }
-
-        public bool IsCorruptedDetectionEnabled => false;
-
-        public int BlockCount => this.blocks.Count;
-
-        public VulkanMemoryBlock this[int index] => this.blocks[index];
-
-        private IEnumerable<VulkanMemoryBlock> BlocksInReverse //Just gonna take advantage of C#...
-        {
-            get {
-                List<VulkanMemoryBlock> localList = this.blocks;
-
-                for (int index = localList.Count - 1; index >= 0; --index) yield return localList[index];
-            }
-        }
-
-        public void CreateMinBlocks() {
-            if (this.blocks.Count > 0) throw new InvalidOperationException("Block list not empty");
-
-            for (int i = 0; i < this.minBlockCount; ++i) {
-                Result res = this.CreateBlock(this.PreferredBlockSize, out _);
-
-                if (res != Result.Success) throw new AllocationException("Unable to allocate device memory block", res);
-            }
-        }
-
-        public void GetPoolStats(out PoolStats stats) {
+    public bool IsEmpty {
+        get {
             this.mutex.EnterReadLock();
 
             try {
-                stats = new PoolStats();
-                stats.BlockCount = this.blocks.Count;
-
-                foreach (var block in this.blocks) {
-                    Debug.Assert(block != null);
-
-                    block.Validate();
-
-                    block.MetaData.AddPoolStats(ref stats);
-                }
-            }
-            finally {
+                return this.blocks.Count == 0;
+            } finally {
                 this.mutex.ExitReadLock();
             }
         }
+    }
 
-        public Allocation Allocate(int currentFrame, long size, long alignment, in AllocationCreateInfo allocInfo, SuballocationType suballocType) {
-            this.mutex.EnterWriteLock();
+    public bool IsCorruptedDetectionEnabled => false;
 
-            try {
-                return this.AllocatePage(currentFrame, size, alignment, allocInfo, suballocType);
-            }
-            finally {
-                this.mutex.ExitWriteLock();
-            }
+    public int BlockCount => this.blocks.Count;
+
+    public VulkanMemoryBlock this[int index] => this.blocks[index];
+
+    private IEnumerable<VulkanMemoryBlock> BlocksInReverse //Just gonna take advantage of C#...
+    {
+        get {
+            List<VulkanMemoryBlock> localList = this.blocks;
+
+            for (int index = localList.Count - 1; index >= 0; --index) yield return localList[index];
         }
+    }
 
-        public void Free(Allocation allocation) {
-            VulkanMemoryBlock? blockToDelete = null;
+    public void CreateMinBlocks() {
+        if (this.blocks.Count > 0) throw new InvalidOperationException("Block list not empty");
 
-            bool budgetExceeded = false;
-            {
-                int heapIndex = this.Allocator.MemoryTypeIndexToHeapIndex(this.MemoryTypeIndex);
-                this.Allocator.GetBudget(heapIndex, out AllocationBudget budget);
-                budgetExceeded = budget.Usage >= budget.Budget;
-            }
+        for (int i = 0; i < this.minBlockCount; ++i) {
+            Result res = this.CreateBlock(this.PreferredBlockSize, out _);
 
-            this.mutex.EnterWriteLock();
+            if (res != Result.Success) throw new AllocationException("Unable to allocate device memory block", res);
+        }
+    }
 
-            try {
-                BlockAllocation blockAlloc = (BlockAllocation)allocation;
+    public void GetPoolStats(out PoolStats stats) {
+        this.mutex.EnterReadLock();
 
-                VulkanMemoryBlock block = blockAlloc.Block;
+        try {
+            stats = new PoolStats();
+            stats.BlockCount = this.blocks.Count;
 
-                //Corruption Detection TODO
-
-                if (allocation.IsPersistantMapped) block.Unmap(1);
-
-                block.MetaData.Free(blockAlloc);
+            foreach (var block in this.blocks) {
+                Debug.Assert(block != null);
 
                 block.Validate();
 
-                bool canDeleteBlock = this.blocks.Count > this.minBlockCount;
+                block.MetaData.AddPoolStats(ref stats);
+            }
+        } finally {
+            this.mutex.ExitReadLock();
+        }
+    }
+
+    public Allocation Allocate(int currentFrame, long size, long alignment, in AllocationCreateInfo allocInfo, SuballocationType suballocType) {
+        this.mutex.EnterWriteLock();
+
+        try {
+            return this.AllocatePage(currentFrame, size, alignment, allocInfo, suballocType);
+        } finally {
+            this.mutex.ExitWriteLock();
+        }
+    }
+
+    public void Free(Allocation allocation) {
+        VulkanMemoryBlock? blockToDelete = null;
+
+        bool budgetExceeded = false;
+        {
+            int heapIndex = this.Allocator.MemoryTypeIndexToHeapIndex(this.MemoryTypeIndex);
+            this.Allocator.GetBudget(heapIndex, out AllocationBudget budget);
+            budgetExceeded = budget.Usage >= budget.Budget;
+        }
+
+        this.mutex.EnterWriteLock();
+
+        try {
+            BlockAllocation blockAlloc = (BlockAllocation)allocation;
+
+            VulkanMemoryBlock block = blockAlloc.Block;
+
+            //Corruption Detection TODO
+
+            if (allocation.IsPersistantMapped) block.Unmap(1);
+
+            block.MetaData.Free(blockAlloc);
+
+            block.Validate();
+
+            bool canDeleteBlock = this.blocks.Count > this.minBlockCount;
+
+            if (block.MetaData.IsEmpty) {
+                if ((this.hasEmptyBlock || budgetExceeded) && canDeleteBlock) {
+                    blockToDelete = block;
+                    this.Remove(block);
+                }
+            } else if (this.hasEmptyBlock && canDeleteBlock) {
+                block = this.blocks[^1];
 
                 if (block.MetaData.IsEmpty) {
-                    if ((this.hasEmptyBlock || budgetExceeded) && canDeleteBlock) {
-                        blockToDelete = block;
-                        this.Remove(block);
-                    }
-                } else if (this.hasEmptyBlock && canDeleteBlock) {
-                    block = this.blocks[^1];
-
-                    if (block.MetaData.IsEmpty) {
-                        blockToDelete = block;
-                        this.blocks.RemoveAt(this.blocks.Count - 1);
-                    }
-                }
-
-                this.UpdateHasEmptyBlock();
-                this.IncrementallySortBlocks();
-            }
-            finally {
-                this.mutex.ExitWriteLock();
-            }
-
-            if (blockToDelete != null) blockToDelete.Dispose();
-        }
-
-        public void AddStats(Stats stats) {
-            int memTypeIndex = this.MemoryTypeIndex;
-            int memHeapIndex = this.Allocator.MemoryTypeIndexToHeapIndex(memTypeIndex);
-
-            this.mutex.EnterReadLock();
-
-            try {
-                foreach (var block in this.blocks) {
-                    Debug.Assert(block != null);
-                    block.Validate();
-
-                    block.MetaData.CalcAllocationStatInfo(out StatInfo info);
-                    StatInfo.Add(ref stats.Total, info);
-                    StatInfo.Add(ref stats.MemoryType[memTypeIndex], info);
-                    StatInfo.Add(ref stats.MemoryHeap[memHeapIndex], info);
+                    blockToDelete = block;
+                    this.blocks.RemoveAt(this.blocks.Count - 1);
                 }
             }
-            finally {
-                this.mutex.ExitReadLock();
-            }
+
+            this.UpdateHasEmptyBlock();
+            this.IncrementallySortBlocks();
+        } finally {
+            this.mutex.ExitWriteLock();
         }
 
-        /// <summary>
-        /// 
-        /// </summary>
-        /// <param name="currentFrame"></param>
-        /// <returns>
-        /// Lost Allocation Count
-        /// </returns>
-        public int MakePoolAllocationsLost(int currentFrame) {
-            this.mutex.EnterWriteLock();
+        if (blockToDelete != null) blockToDelete.Dispose();
+    }
 
-            try {
-                int lostAllocationCount = 0;
+    public void AddStats(Stats stats) {
+        int memTypeIndex = this.MemoryTypeIndex;
+        int memHeapIndex = this.Allocator.MemoryTypeIndexToHeapIndex(memTypeIndex);
 
-                foreach (var block in this.blocks) {
-                    Debug.Assert(block != null);
+        this.mutex.EnterReadLock();
 
-                    lostAllocationCount += block.MetaData.MakeAllocationsLost(currentFrame, this.FrameInUseCount);
-                }
+        try {
+            foreach (var block in this.blocks) {
+                Debug.Assert(block != null);
+                block.Validate();
 
-                return lostAllocationCount;
+                block.MetaData.CalcAllocationStatInfo(out StatInfo info);
+                StatInfo.Add(ref stats.Total, info);
+                StatInfo.Add(ref stats.MemoryType[memTypeIndex], info);
+                StatInfo.Add(ref stats.MemoryHeap[memHeapIndex], info);
             }
-            finally {
-                this.mutex.ExitWriteLock();
-            }
+        } finally {
+            this.mutex.ExitReadLock();
         }
+    }
 
-        public Result CheckCorruption() {
-            throw new NotImplementedException();
-        }
+    /// <summary>
+    /// 
+    /// </summary>
+    /// <param name="currentFrame"></param>
+    /// <returns>
+    /// Lost Allocation Count
+    /// </returns>
+    public int MakePoolAllocationsLost(int currentFrame) {
+        this.mutex.EnterWriteLock();
 
-        public int CalcAllocationCount() {
-            int res = 0;
+        try {
+            int lostAllocationCount = 0;
 
-            foreach (VulkanMemoryBlock block in this.blocks) res += block.MetaData.AllocationCount;
+            foreach (var block in this.blocks) {
+                Debug.Assert(block != null);
 
-            return res;
-        }
-
-        public bool IsBufferImageGranularityConflictPossible() {
-            if (this.BufferImageGranularity == 1)
-                return false;
-
-            SuballocationType lastSuballocType = SuballocationType.Free;
-
-            foreach (VulkanMemoryBlock block in this.blocks) {
-                BlockMetadata_Generic? metadata = block.MetaData as BlockMetadata_Generic;
-                Debug.Assert(metadata != null);
-
-                if (metadata.IsBufferImageGranularityConflictPossible(this.BufferImageGranularity, ref lastSuballocType)) return true;
+                lostAllocationCount += block.MetaData.MakeAllocationsLost(currentFrame, this.FrameInUseCount);
             }
 
+            return lostAllocationCount;
+        } finally {
+            this.mutex.ExitWriteLock();
+        }
+    }
+
+    public Result CheckCorruption() => throw new NotImplementedException();
+
+    public int CalcAllocationCount() {
+        int res = 0;
+
+        foreach (VulkanMemoryBlock block in this.blocks) res += block.MetaData.AllocationCount;
+
+        return res;
+    }
+
+    public bool IsBufferImageGranularityConflictPossible() {
+        if (this.BufferImageGranularity == 1)
             return false;
+
+        SuballocationType lastSuballocType = SuballocationType.Free;
+
+        foreach (VulkanMemoryBlock block in this.blocks) {
+            BlockMetadata_Generic? metadata = block.MetaData as BlockMetadata_Generic;
+            Debug.Assert(metadata != null);
+
+            if (metadata.IsBufferImageGranularityConflictPossible(this.BufferImageGranularity, ref lastSuballocType)) return true;
         }
 
-        private long CalcMaxBlockSize() {
-            long result = 0;
+        return false;
+    }
 
-            for (int i = this.blocks.Count - 1; i >= 0; --i) {
-                long blockSize = this.blocks[i].MetaData.Size;
+    private long CalcMaxBlockSize() {
+        long result = 0;
 
-                if (result < blockSize) result = blockSize;
+        for (int i = this.blocks.Count - 1; i >= 0; --i) {
+            long blockSize = this.blocks[i].MetaData.Size;
 
-                if (result >= this.PreferredBlockSize) break;
-            }
+            if (result < blockSize) result = blockSize;
 
-            return result;
+            if (result >= this.PreferredBlockSize) break;
         }
 
-        [SkipLocalsInit]
-        private Allocation AllocatePage(int currentFrame, long size, long alignment, in AllocationCreateInfo createInfo, SuballocationType suballocType) {
-            bool canMakeOtherLost = (createInfo.Flags & AllocationCreateFlags.CanMakeOtherLost) != 0;
-            bool mapped = (createInfo.Flags & AllocationCreateFlags.Mapped) != 0;
+        return result;
+    }
 
-            long freeMemory;
+    [SkipLocalsInit]
+    private Allocation AllocatePage(int currentFrame, long size, long alignment, in AllocationCreateInfo createInfo, SuballocationType suballocType) {
+        bool canMakeOtherLost = (createInfo.Flags & AllocationCreateFlags.CanMakeOtherLost) != 0;
+        bool mapped = (createInfo.Flags & AllocationCreateFlags.Mapped) != 0;
 
-            {
-                int heapIndex = this.Allocator.MemoryTypeIndexToHeapIndex(this.MemoryTypeIndex);
+        long freeMemory;
 
-                this.Allocator.GetBudget(heapIndex, out AllocationBudget heapBudget);
+        {
+            int heapIndex = this.Allocator.MemoryTypeIndexToHeapIndex(this.MemoryTypeIndex);
 
-                freeMemory = heapBudget.Usage < heapBudget.Budget ? heapBudget.Budget - heapBudget.Usage : 0;
-            }
+            this.Allocator.GetBudget(heapIndex, out AllocationBudget heapBudget);
 
-            bool canFallbackToDedicated = !this.IsCustomPool;
-            bool canCreateNewBlock = (createInfo.Flags & AllocationCreateFlags.NeverAllocate) == 0 && this.blocks.Count < this.maxBlockCount && (freeMemory >= size || !canFallbackToDedicated);
+            freeMemory = heapBudget.Usage < heapBudget.Budget ? heapBudget.Budget - heapBudget.Usage : 0;
+        }
 
-            AllocationStrategyFlags strategy = createInfo.Strategy;
+        bool canFallbackToDedicated = !this.IsCustomPool;
+        bool canCreateNewBlock = (createInfo.Flags & AllocationCreateFlags.NeverAllocate) == 0 && this.blocks.Count < this.maxBlockCount && (freeMemory >= size || !canFallbackToDedicated);
 
-            //if (this.algorithm == (uint)PoolCreateFlags.LinearAlgorithm && this.maxBlockCount > 1)
-            //{
-            //    canMakeOtherLost = false;
-            //}
+        AllocationStrategyFlags strategy = createInfo.Strategy;
 
-            //if (isUpperAddress && (this.algorithm != (uint)PoolCreateFlags.LinearAlgorithm || this.maxBlockCount > 1))
-            //{
-            //    throw new AllocationException("Upper address allocation unavailable", Result.ErrorFeatureNotPresent);
-            //}
+        //if (this.algorithm == (uint)PoolCreateFlags.LinearAlgorithm && this.maxBlockCount > 1)
+        //{
+        //    canMakeOtherLost = false;
+        //}
 
-            switch (strategy) {
-                case 0:
-                    strategy = AllocationStrategyFlags.BestFit;
-                    break;
-                case AllocationStrategyFlags.BestFit:
-                case AllocationStrategyFlags.WorstFit:
-                case AllocationStrategyFlags.FirstFit:
-                    break;
-                default:
-                    throw new AllocationException("Invalid allocation strategy", Result.ErrorFeatureNotPresent);
-            }
+        //if (isUpperAddress && (this.algorithm != (uint)PoolCreateFlags.LinearAlgorithm || this.maxBlockCount > 1))
+        //{
+        //    throw new AllocationException("Upper address allocation unavailable", Result.ErrorFeatureNotPresent);
+        //}
 
-            if (size + 2 * Helpers.DebugMargin > this.PreferredBlockSize) throw new AllocationException("Allocation size larger than block size", Result.ErrorOutOfDeviceMemory);
+        switch (strategy) {
+            case 0:
+                strategy = AllocationStrategyFlags.BestFit;
+                break;
+            case AllocationStrategyFlags.BestFit:
+            case AllocationStrategyFlags.WorstFit:
+            case AllocationStrategyFlags.FirstFit:
+                break;
+            default:
+                throw new AllocationException("Invalid allocation strategy", Result.ErrorFeatureNotPresent);
+        }
 
-            AllocationContext context = new(
-                currentFrame,
-                this.FrameInUseCount,
-                this.BufferImageGranularity,
-                size,
-                alignment,
-                strategy,
-                suballocType,
-                canMakeOtherLost);
+        if (size + 2 * Helpers.DebugMargin > this.PreferredBlockSize) throw new AllocationException("Allocation size larger than block size", Result.ErrorOutOfDeviceMemory);
 
-            Allocation? alloc;
+        AllocationContext context = new(
+            currentFrame,
+            this.FrameInUseCount,
+            this.BufferImageGranularity,
+            size,
+            alignment,
+            strategy,
+            suballocType,
+            canMakeOtherLost
+        );
 
-            if (!canMakeOtherLost || canCreateNewBlock) {
-                AllocationCreateFlags allocFlagsCopy = createInfo.Flags & ~AllocationCreateFlags.CanMakeOtherLost;
+        Allocation? alloc;
 
-                if (strategy == AllocationStrategyFlags.BestFit)
-                    foreach (VulkanMemoryBlock block in this.blocks) {
-                        alloc = this.AllocateFromBlock(block, in context, allocFlagsCopy, createInfo.UserData);
+        if (!canMakeOtherLost || canCreateNewBlock) {
+            AllocationCreateFlags allocFlagsCopy = createInfo.Flags & ~AllocationCreateFlags.CanMakeOtherLost;
 
-                        if (alloc != null)
-                            //Possibly Log here
-                            return alloc;
-                    }
-                else
-                    foreach (VulkanMemoryBlock curBlock in this.BlocksInReverse) {
-                        alloc = this.AllocateFromBlock(curBlock, in context, allocFlagsCopy, createInfo.UserData);
-
-                        if (alloc != null)
-                            //Possibly Log here
-                            return alloc;
-                    }
-            }
-
-            if (canCreateNewBlock) {
-                AllocationCreateFlags allocFlagsCopy = createInfo.Flags & ~AllocationCreateFlags.CanMakeOtherLost;
-
-                long newBlockSize = this.PreferredBlockSize;
-                int newBlockSizeShift = 0;
-                const int NewBlockSizeShiftMax = 3;
-
-                if (!this.explicitBlockSize) {
-                    long maxExistingBlockSize = this.CalcMaxBlockSize();
-
-                    for (int i = 0; i < NewBlockSizeShiftMax; ++i) {
-                        long smallerNewBlockSize = newBlockSize / 2;
-                        if (smallerNewBlockSize > maxExistingBlockSize && smallerNewBlockSize >= size * 2) {
-                            newBlockSize = smallerNewBlockSize;
-                            newBlockSizeShift += 1;
-                        } else {
-                            break;
-                        }
-                    }
-                }
-
-                int newBlockIndex = 0;
-
-                Result res = newBlockSize <= freeMemory || !canFallbackToDedicated ? this.CreateBlock(newBlockSize, out newBlockIndex) : Result.ErrorOutOfDeviceMemory;
-
-                if (!this.explicitBlockSize)
-                    while (res < 0 && newBlockSizeShift < NewBlockSizeShiftMax) {
-                        long smallerNewBlockSize = newBlockSize / 2;
-
-                        if (smallerNewBlockSize >= size) {
-                            newBlockSize = smallerNewBlockSize;
-                            newBlockSizeShift += 1;
-                            res = newBlockSize <= freeMemory || !canFallbackToDedicated ? this.CreateBlock(newBlockSize, out newBlockIndex) : Result.ErrorOutOfDeviceMemory;
-                        } else {
-                            break;
-                        }
-                    }
-
-                if (res == Result.Success) {
-                    VulkanMemoryBlock block = this.blocks[newBlockIndex];
-
+            if (strategy == AllocationStrategyFlags.BestFit)
+                foreach (VulkanMemoryBlock block in this.blocks) {
                     alloc = this.AllocateFromBlock(block, in context, allocFlagsCopy, createInfo.UserData);
 
                     if (alloc != null)
                         //Possibly Log here
                         return alloc;
                 }
+            else
+                foreach (VulkanMemoryBlock curBlock in this.BlocksInReverse) {
+                    alloc = this.AllocateFromBlock(curBlock, in context, allocFlagsCopy, createInfo.UserData);
+
+                    if (alloc != null)
+                        //Possibly Log here
+                        return alloc;
+                }
+        }
+
+        if (canCreateNewBlock) {
+            AllocationCreateFlags allocFlagsCopy = createInfo.Flags & ~AllocationCreateFlags.CanMakeOtherLost;
+
+            long newBlockSize = this.PreferredBlockSize;
+            int newBlockSizeShift = 0;
+            const int NewBlockSizeShiftMax = 3;
+
+            if (!this.explicitBlockSize) {
+                long maxExistingBlockSize = this.CalcMaxBlockSize();
+
+                for (int i = 0; i < NewBlockSizeShiftMax; ++i) {
+                    long smallerNewBlockSize = newBlockSize / 2;
+                    if (smallerNewBlockSize > maxExistingBlockSize && smallerNewBlockSize >= size * 2) {
+                        newBlockSize = smallerNewBlockSize;
+                        newBlockSizeShift += 1;
+                    } else {
+                        break;
+                    }
+                }
             }
 
-            if (canMakeOtherLost) {
-                int tryIndex = 0;
+            int newBlockIndex = 0;
 
-                for (; tryIndex < AllocationTryCount; ++tryIndex) {
-                    VulkanMemoryBlock? bestRequestBlock = null;
+            Result res = newBlockSize <= freeMemory || !canFallbackToDedicated ? this.CreateBlock(newBlockSize, out newBlockIndex) : Result.ErrorOutOfDeviceMemory;
 
-                    Unsafe.SkipInit(out AllocationRequest bestAllocRequest);
+            if (!this.explicitBlockSize)
+                while (res < 0 && newBlockSizeShift < NewBlockSizeShiftMax) {
+                    long smallerNewBlockSize = newBlockSize / 2;
 
-                    long bestRequestCost = long.MaxValue;
-
-                    if (strategy == AllocationStrategyFlags.BestFit) {
-                        foreach (VulkanMemoryBlock curBlock in this.blocks)
-                            if (curBlock.MetaData.TryCreateAllocationRequest(in context, out AllocationRequest request)) {
-                                long currRequestCost = request.CalcCost();
-
-                                if (bestRequestBlock == null || currRequestCost < bestRequestCost) {
-                                    bestRequestBlock = curBlock;
-                                    bestAllocRequest = request;
-                                    bestRequestCost = currRequestCost;
-
-                                    if (bestRequestCost == 0)
-                                        break;
-                                }
-                            }
+                    if (smallerNewBlockSize >= size) {
+                        newBlockSize = smallerNewBlockSize;
+                        newBlockSizeShift += 1;
+                        res = newBlockSize <= freeMemory || !canFallbackToDedicated ? this.CreateBlock(newBlockSize, out newBlockIndex) : Result.ErrorOutOfDeviceMemory;
                     } else {
-                        foreach (VulkanMemoryBlock curBlock in this.BlocksInReverse)
-                            if (curBlock.MetaData.TryCreateAllocationRequest(in context, out AllocationRequest request)) {
-                                long curRequestCost = request.CalcCost();
-
-                                if (bestRequestBlock == null || curRequestCost < bestRequestCost || strategy == AllocationStrategyFlags.FirstFit) {
-                                    bestRequestBlock = curBlock;
-                                    bestRequestCost = curRequestCost;
-                                    bestAllocRequest = request;
-
-                                    if (bestRequestCost == 0 || strategy == AllocationStrategyFlags.FirstFit) break;
-                                }
-                            }
+                        break;
                     }
+                }
 
-                    if (bestRequestBlock != null) {
-                        if (mapped) bestRequestBlock.Map(1);
+            if (res == Result.Success) {
+                VulkanMemoryBlock block = this.blocks[newBlockIndex];
 
-                        if (bestRequestBlock.MetaData.MakeRequestedAllocationsLost(currentFrame, this.FrameInUseCount, ref bestAllocRequest)) {
-                            BlockAllocation talloc = new(this.Allocator, this.Allocator.CurrentFrameIndex);
+                alloc = this.AllocateFromBlock(block, in context, allocFlagsCopy, createInfo.UserData);
 
-                            bestRequestBlock.MetaData.Alloc(in bestAllocRequest, suballocType, size, talloc);
+                if (alloc != null)
+                    //Possibly Log here
+                    return alloc;
+            }
+        }
 
-                            this.UpdateHasEmptyBlock();
+        if (canMakeOtherLost) {
+            int tryIndex = 0;
 
-                            //(allocation as BlockAllocation).InitBlockAllocation();
+            for (; tryIndex < AllocationTryCount; ++tryIndex) {
+                VulkanMemoryBlock? bestRequestBlock = null;
 
-                            try {
-                                bestRequestBlock.Validate(); //Won't be called in release builds
+                Unsafe.SkipInit(out AllocationRequest bestAllocRequest);
+
+                long bestRequestCost = long.MaxValue;
+
+                if (strategy == AllocationStrategyFlags.BestFit) {
+                    foreach (VulkanMemoryBlock curBlock in this.blocks)
+                        if (curBlock.MetaData.TryCreateAllocationRequest(in context, out AllocationRequest request)) {
+                            long currRequestCost = request.CalcCost();
+
+                            if (bestRequestBlock == null || currRequestCost < bestRequestCost) {
+                                bestRequestBlock = curBlock;
+                                bestAllocRequest = request;
+                                bestRequestCost = currRequestCost;
+
+                                if (bestRequestCost == 0)
+                                    break;
                             }
-                            catch {
-                                talloc.Dispose();
-                                throw;
-                            }
-
-                            talloc.UserData = createInfo.UserData;
-
-                            this.Allocator.Budget.AddAllocation(this.Allocator.MemoryTypeIndexToHeapIndex(this.MemoryTypeIndex), size);
-
-                            //Maybe put memory init and corruption detection here
-
-                            return talloc;
                         }
-                    } else {
-                        break;
-                    }
+                } else {
+                    foreach (VulkanMemoryBlock curBlock in this.BlocksInReverse)
+                        if (curBlock.MetaData.TryCreateAllocationRequest(in context, out AllocationRequest request)) {
+                            long curRequestCost = request.CalcCost();
+
+                            if (bestRequestBlock == null || curRequestCost < bestRequestCost || strategy == AllocationStrategyFlags.FirstFit) {
+                                bestRequestBlock = curBlock;
+                                bestRequestCost = curRequestCost;
+                                bestAllocRequest = request;
+
+                                if (bestRequestCost == 0 || strategy == AllocationStrategyFlags.FirstFit) break;
+                            }
+                        }
                 }
 
-                if (tryIndex == AllocationTryCount) throw new AllocationException("", Result.ErrorTooManyObjects);
-            }
+                if (bestRequestBlock != null) {
+                    if (mapped) bestRequestBlock.Map(1);
 
-            throw new AllocationException("Unable to allocate memory");
-        }
+                    if (bestRequestBlock.MetaData.MakeRequestedAllocationsLost(currentFrame, this.FrameInUseCount, ref bestAllocRequest)) {
+                        BlockAllocation talloc = new(this.Allocator, this.Allocator.CurrentFrameIndex);
 
-        private Allocation? AllocateFromBlock(VulkanMemoryBlock block, in AllocationContext context, AllocationCreateFlags flags, object? userData) {
-            Debug.Assert((flags & AllocationCreateFlags.CanMakeOtherLost) == 0);
-            bool mapped = (flags & AllocationCreateFlags.Mapped) != 0;
+                        bestRequestBlock.MetaData.Alloc(in bestAllocRequest, suballocType, size, talloc);
 
-            if (block.MetaData.TryCreateAllocationRequest(in context, out AllocationRequest request)) {
-                Debug.Assert(request.ItemsToMakeLostCount == 0);
+                        this.UpdateHasEmptyBlock();
 
-                if (mapped) block.Map(1);
+                        //(allocation as BlockAllocation).InitBlockAllocation();
 
-                BlockAllocation allocation = new(this.Allocator, this.Allocator.CurrentFrameIndex);
+                        try {
+                            bestRequestBlock.Validate(); //Won't be called in release builds
+                        } catch {
+                            talloc.Dispose();
+                            throw;
+                        }
 
-                block.MetaData.Alloc(in request, context.SuballocationType, context.AllocationSize, allocation);
+                        talloc.UserData = createInfo.UserData;
 
-                allocation.InitBlockAllocation(block, request.Offset, context.AllocationAlignment, context.AllocationSize, this.MemoryTypeIndex,
-                    context.SuballocationType, mapped, (flags & AllocationCreateFlags.CanBecomeLost) != 0);
+                        this.Allocator.Budget.AddAllocation(this.Allocator.MemoryTypeIndexToHeapIndex(this.MemoryTypeIndex), size);
 
-                this.UpdateHasEmptyBlock();
+                        //Maybe put memory init and corruption detection here
 
-                block.Validate();
-
-                allocation.UserData = userData;
-
-                this.Allocator.Budget.AddAllocation(this.Allocator.MemoryTypeIndexToHeapIndex(this.MemoryTypeIndex), context.AllocationSize);
-
-                return allocation;
-            }
-
-            return null;
-        }
-
-        private unsafe Result CreateBlock(long blockSize, out int newBlockIndex) {
-            newBlockIndex = -1;
-
-            MemoryAllocateInfo info = new() {
-                SType = StructureType.MemoryAllocateInfo,
-                MemoryTypeIndex = (uint)this.MemoryTypeIndex,
-                AllocationSize = (ulong)blockSize
-            };
-
-            // Every standalone block can potentially contain a buffer with BufferUsageFlags.BufferUsageShaderDeviceAddressBitKhr - always enable the feature
-            MemoryAllocateFlagsInfoKHR allocFlagsInfo = new(StructureType.MemoryAllocateFlagsInfoKhr);
-            if (this.Allocator.UseKhrBufferDeviceAddress) {
-                allocFlagsInfo.Flags = MemoryAllocateFlags.MemoryAllocateDeviceAddressBitKhr;
-                info.PNext = &allocFlagsInfo;
-            }
-
-            Result res = this.Allocator.AllocateVulkanMemory(in info, out DeviceMemory mem);
-
-            if (res < 0) return res;
-
-            IBlockMetadata metaObject = this.metaObjectCreate(blockSize);
-
-            if (metaObject.Size != blockSize) throw new InvalidOperationException("Returned Metadata object reports incorrect block size");
-
-            VulkanMemoryBlock block = new(this.Allocator, this.ParentPool, this.MemoryTypeIndex, mem, this.nextBlockID++, metaObject);
-
-            this.blocks.Add(block);
-
-            newBlockIndex = this.blocks.Count - 1;
-
-            return Result.Success;
-        }
-
-        private void FreeEmptyBlocks(ref Defragmentation.DefragmentationStats stats) {
-            for (int i = this.blocks.Count - 1; i >= 0; --i) {
-                VulkanMemoryBlock block = this.blocks[i];
-
-                if (block.MetaData.IsEmpty) {
-                    if (this.blocks.Count > this.minBlockCount) {
-                        stats.DeviceMemoryBlocksFreed += 1;
-                        stats.BytesFreed += block.MetaData.Size;
-
-                        this.blocks.RemoveAt(i);
-                        block.Dispose();
-                    } else {
-                        break;
+                        return talloc;
                     }
-                }
-            }
-
-            this.UpdateHasEmptyBlock();
-        }
-
-        private void UpdateHasEmptyBlock() {
-            this.hasEmptyBlock = false;
-
-            foreach (VulkanMemoryBlock block in this.blocks)
-                if (block.MetaData.IsEmpty) {
-                    this.hasEmptyBlock = true;
+                } else {
                     break;
                 }
+            }
+
+            if (tryIndex == AllocationTryCount) throw new AllocationException("", Result.ErrorTooManyObjects);
         }
 
-        private void Remove(VulkanMemoryBlock block) {
-            bool res = this.blocks.Remove(block);
-            Debug.Assert(res, "");
+        throw new AllocationException("Unable to allocate memory");
+    }
+
+    private Allocation? AllocateFromBlock(VulkanMemoryBlock block, in AllocationContext context, AllocationCreateFlags flags, object? userData) {
+        Debug.Assert((flags & AllocationCreateFlags.CanMakeOtherLost) == 0);
+        bool mapped = (flags & AllocationCreateFlags.Mapped) != 0;
+
+        if (block.MetaData.TryCreateAllocationRequest(in context, out AllocationRequest request)) {
+            Debug.Assert(request.ItemsToMakeLostCount == 0);
+
+            if (mapped) block.Map(1);
+
+            BlockAllocation allocation = new(this.Allocator, this.Allocator.CurrentFrameIndex);
+
+            block.MetaData.Alloc(in request, context.SuballocationType, context.AllocationSize, allocation);
+
+            allocation.InitBlockAllocation(
+                block, request.Offset, context.AllocationAlignment, context.AllocationSize, this.MemoryTypeIndex,
+                context.SuballocationType, mapped, (flags & AllocationCreateFlags.CanBecomeLost) != 0
+            );
+
+            this.UpdateHasEmptyBlock();
+
+            block.Validate();
+
+            allocation.UserData = userData;
+
+            this.Allocator.Budget.AddAllocation(this.Allocator.MemoryTypeIndexToHeapIndex(this.MemoryTypeIndex), context.AllocationSize);
+
+            return allocation;
         }
 
-        private void IncrementallySortBlocks() {
-            if ((uint)this.blocks.Count > 1) {
-                VulkanMemoryBlock prevBlock = this.blocks[0];
-                int i = 1;
+        return null;
+    }
 
-                do {
-                    VulkanMemoryBlock curBlock = this.blocks[i];
+    private unsafe Result CreateBlock(long blockSize, out int newBlockIndex) {
+        newBlockIndex = -1;
 
-                    if (prevBlock.MetaData.SumFreeSize > curBlock.MetaData.SumFreeSize) {
-                        this.blocks[i - 1] = curBlock;
-                        this.blocks[i] = prevBlock;
-                        return;
-                    }
+        MemoryAllocateInfo info = new() { SType = StructureType.MemoryAllocateInfo, MemoryTypeIndex = (uint)this.MemoryTypeIndex, AllocationSize = (ulong)blockSize };
 
-                    prevBlock = curBlock;
-                    i += 1;
-                } while (i < this.blocks.Count);
+        // Every standalone block can potentially contain a buffer with BufferUsageFlags.BufferUsageShaderDeviceAddressBitKhr - always enable the feature
+        MemoryAllocateFlagsInfoKHR allocFlagsInfo = new(StructureType.MemoryAllocateFlagsInfoKhr);
+        if (this.Allocator.UseKhrBufferDeviceAddress) {
+            allocFlagsInfo.Flags = MemoryAllocateFlags.MemoryAllocateDeviceAddressBitKhr;
+            info.PNext = &allocFlagsInfo;
+        }
+
+        Result res = this.Allocator.AllocateVulkanMemory(in info, out DeviceMemory mem);
+
+        if (res < 0) return res;
+
+        IBlockMetadata metaObject = this.metaObjectCreate(blockSize);
+
+        if (metaObject.Size != blockSize) throw new InvalidOperationException("Returned Metadata object reports incorrect block size");
+
+        VulkanMemoryBlock block = new(this.Allocator, this.ParentPool, this.MemoryTypeIndex, mem, this.nextBlockID++, metaObject);
+
+        this.blocks.Add(block);
+
+        newBlockIndex = this.blocks.Count - 1;
+
+        return Result.Success;
+    }
+
+    private void FreeEmptyBlocks(ref Defragmentation.DefragmentationStats stats) {
+        for (int i = this.blocks.Count - 1; i >= 0; --i) {
+            VulkanMemoryBlock block = this.blocks[i];
+
+            if (block.MetaData.IsEmpty) {
+                if (this.blocks.Count > this.minBlockCount) {
+                    stats.DeviceMemoryBlocksFreed += 1;
+                    stats.BytesFreed += block.MetaData.Size;
+
+                    this.blocks.RemoveAt(i);
+                    block.Dispose();
+                } else {
+                    break;
+                }
             }
         }
 
-        public class DefragmentationContext {
-            private readonly BlockList List;
+        this.UpdateHasEmptyBlock();
+    }
 
-            public DefragmentationContext(BlockList list) {
-                this.List = list;
+    private void UpdateHasEmptyBlock() {
+        this.hasEmptyBlock = false;
+
+        foreach (VulkanMemoryBlock block in this.blocks)
+            if (block.MetaData.IsEmpty) {
+                this.hasEmptyBlock = true;
+                break;
             }
+    }
 
-            //public void Defragment(DefragmentationStats stats, DefragmentationFlags flags, ulong maxCpuBytesToMove, )
+    private void Remove(VulkanMemoryBlock block) {
+        bool res = this.blocks.Remove(block);
+        Debug.Assert(res, "");
+    }
 
-            //public void End(DefragmentationStats stats)
+    private void IncrementallySortBlocks() {
+        if ((uint)this.blocks.Count > 1) {
+            VulkanMemoryBlock prevBlock = this.blocks[0];
+            int i = 1;
 
-            //public uint ProcessDefragmentations(DefragmentationPassMoveInfo move, uint maxMoves)
+            do {
+                VulkanMemoryBlock curBlock = this.blocks[i];
 
-            //public void CommitDefragmentations(DefragmentationStats stats)
+                if (prevBlock.MetaData.SumFreeSize > curBlock.MetaData.SumFreeSize) {
+                    this.blocks[i - 1] = curBlock;
+                    this.blocks[i] = prevBlock;
+                    return;
+                }
+
+                prevBlock = curBlock;
+                i += 1;
+            } while (i < this.blocks.Count);
         }
+    }
+
+    public class DefragmentationContext {
+        private readonly BlockList List;
+
+        public DefragmentationContext(BlockList list) {
+            this.List = list;
+        }
+
+        //public void Defragment(DefragmentationStats stats, DefragmentationFlags flags, ulong maxCpuBytesToMove, )
+
+        //public void End(DefragmentationStats stats)
+
+        //public uint ProcessDefragmentations(DefragmentationPassMoveInfo move, uint maxMoves)
+
+        //public void CommitDefragmentations(DefragmentationStats stats)
     }
 }

@@ -1,67 +1,67 @@
 ﻿using Silk.NET.Vulkan;
 using Buffer = Silk.NET.Vulkan.Buffer;
 
-namespace VMASharp.Defragmentation {
-    public struct DefragmentationInfo2 {
-        public DefragmentationFlags Flags;
+namespace VMASharp.Defragmentation;
 
-        public Allocation[] Allocations;
+public struct DefragmentationInfo2 {
+    public DefragmentationFlags Flags;
 
-        public bool[] AllocationsChanged;
+    public Allocation[] Allocations;
 
-        public VulkanMemoryPool[] Pools;
+    public bool[] AllocationsChanged;
 
-        public ulong MaxCPUBytesToMove;
+    public VulkanMemoryPool[] Pools;
 
-        public int MaxCPUAllocationsToMove;
+    public ulong MaxCPUBytesToMove;
 
-        public ulong MaxGPUBytesToMove;
+    public int MaxCPUAllocationsToMove;
 
-        public int MaxGPUAllocationsToMove;
+    public ulong MaxGPUBytesToMove;
 
-        public CommandBuffer CommandBuffer;
+    public int MaxGPUAllocationsToMove;
+
+    public CommandBuffer CommandBuffer;
+}
+
+public struct DefragmentationPassMoveInfo {
+    public Allocation Allocation;
+
+    public DeviceMemory Memory;
+
+    public ulong Offset;
+}
+
+public struct DefragmentationInfo {
+    public ulong MaxBytesToMove;
+
+    public int MaxAllocationsToMove;
+}
+
+public class DefragmentationStats {
+    public long BytesMoved;
+
+    public long BytesFreed;
+
+    public int AllocationsMoved;
+
+    public int DeviceMemoryBlocksFreed;
+}
+
+internal struct DefragmentationMove {
+    public int SourceBlockIndex, DestinationBlockIndex;
+
+    public ulong SourceOffset, DestinationOffset, Size;
+
+    public Allocation Allocation;
+
+    public VulkanMemoryBlock SourceBlock, DestinationBlock;
+}
+
+internal struct BlockDefragmentationContext {
+    public enum BlockFlags {
+        Used = 0x01
     }
 
-    public struct DefragmentationPassMoveInfo {
-        public Allocation Allocation;
-
-        public DeviceMemory Memory;
-
-        public ulong Offset;
-    }
-
-    public struct DefragmentationInfo {
-        public ulong MaxBytesToMove;
-
-        public int MaxAllocationsToMove;
-    }
-
-    public class DefragmentationStats {
-        public long BytesMoved;
-
-        public long BytesFreed;
-
-        public int AllocationsMoved;
-
-        public int DeviceMemoryBlocksFreed;
-    }
-
-    internal struct DefragmentationMove {
-        public int SourceBlockIndex, DestinationBlockIndex;
-
-        public ulong SourceOffset, DestinationOffset, Size;
-
-        public Allocation Allocation;
-
-        public VulkanMemoryBlock SourceBlock, DestinationBlock;
-    }
-
-    internal struct BlockDefragmentationContext {
-        public enum BlockFlags {
-            Used = 0x01
-        }
-
-        public BlockFlags Flags;
-        public Buffer Buffer;
-    }
+    public BlockFlags Flags;
+    public Buffer Buffer;
 }

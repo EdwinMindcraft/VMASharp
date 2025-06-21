@@ -3,51 +3,51 @@ using System.Threading;
 using System.Diagnostics;
 using Silk.NET.Vulkan;
 
-namespace VMASharp {
-    public struct AllocationBudget {
-        public long BlockBytes;
-        public long AllocationBytes;
-        public long Usage;
-        public long Budget;
+namespace VMASharp;
 
-        public AllocationBudget(long blockBytes, long allocationBytes, long usage, long budget) {
-            this.BlockBytes = blockBytes;
-            this.AllocationBytes = allocationBytes;
-            this.Usage = usage;
-            this.Budget = budget;
-        }
+public struct AllocationBudget {
+    public long BlockBytes;
+    public long AllocationBytes;
+    public long Usage;
+    public long Budget;
+
+    public AllocationBudget(long blockBytes, long allocationBytes, long usage, long budget) {
+        this.BlockBytes = blockBytes;
+        this.AllocationBytes = allocationBytes;
+        this.Usage = usage;
+        this.Budget = budget;
+    }
+}
+
+internal class CurrentBudgetData {
+    public readonly InternalBudgetStruct[] BudgetData = new InternalBudgetStruct[Vk.MaxMemoryHeaps];
+    public readonly ReaderWriterLockSlim BudgetMutex = new();
+    public int OperationsSinceBudgetFetch;
+
+    public CurrentBudgetData() { }
+
+    public void AddAllocation(int heapIndex, long allocationSize) {
+        if ((uint)heapIndex >= Vk.MaxMemoryHeaps) throw new ArgumentOutOfRangeException(nameof(heapIndex));
+
+        Interlocked.Add(ref this.BudgetData[heapIndex].AllocationBytes, allocationSize);
+        Interlocked.Increment(ref this.OperationsSinceBudgetFetch);
     }
 
-    internal class CurrentBudgetData {
-        public readonly InternalBudgetStruct[] BudgetData = new InternalBudgetStruct[Vk.MaxMemoryHeaps];
-        public readonly ReaderWriterLockSlim BudgetMutex = new();
-        public int OperationsSinceBudgetFetch;
+    public void RemoveAllocation(int heapIndex, long allocationSize) {
+        ref InternalBudgetStruct heap = ref this.BudgetData[heapIndex];
 
-        public CurrentBudgetData() { }
+        Debug.Assert(heap.AllocationBytes >= allocationSize);
 
-        public void AddAllocation(int heapIndex, long allocationSize) {
-            if ((uint)heapIndex >= Vk.MaxMemoryHeaps) throw new ArgumentOutOfRangeException(nameof(heapIndex));
+        Interlocked.Add(ref heap.AllocationBytes, -allocationSize); //Subtraction
 
-            Interlocked.Add(ref this.BudgetData[heapIndex].AllocationBytes, allocationSize);
-            Interlocked.Increment(ref this.OperationsSinceBudgetFetch);
-        }
+        Interlocked.Increment(ref this.OperationsSinceBudgetFetch);
+    }
 
-        public void RemoveAllocation(int heapIndex, long allocationSize) {
-            ref InternalBudgetStruct heap = ref this.BudgetData[heapIndex];
-
-            Debug.Assert(heap.AllocationBytes >= allocationSize);
-
-            Interlocked.Add(ref heap.AllocationBytes, -allocationSize); //Subtraction
-
-            Interlocked.Increment(ref this.OperationsSinceBudgetFetch);
-        }
-
-        internal struct InternalBudgetStruct {
-            public long BlockBytes;
-            public long AllocationBytes;
-            public long VulkanUsage;
-            public long VulkanBudget;
-            public long BlockBytesAtBudgetFetch;
-        }
+    internal struct InternalBudgetStruct {
+        public long BlockBytes;
+        public long AllocationBytes;
+        public long VulkanUsage;
+        public long VulkanBudget;
+        public long BlockBytesAtBudgetFetch;
     }
 }
